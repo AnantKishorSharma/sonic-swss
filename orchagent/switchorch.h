@@ -16,6 +16,7 @@
 #define SWITCH_CAPABILITY_TABLE_PORT_TPID_CAPABLE                      "PORT_TPID_CAPABLE"
 #define SWITCH_CAPABILITY_TABLE_LAG_TPID_CAPABLE                       "LAG_TPID_CAPABLE"
 #define SWITCH_CAPABILITY_TABLE_ORDERED_ECMP_CAPABLE                   "ORDERED_ECMP_CAPABLE"
+#define SWITCH_CAPABILITY_TABLE_NHG_PROTECTION_CAPABLE                 "NHG_PROTECTION_CAPABLE"
 #define SWITCH_CAPABILITY_TABLE_PFC_DLR_INIT_CAPABLE                   "PFC_DLR_INIT_CAPABLE"
 #define SWITCH_CAPABILITY_TABLE_PFC_DLDR_CAPABLE                       "PFC_DLDR_CAPABLE"
 #define SWITCH_CAPABILITY_TABLE_BFD_NEXT_HOP_CAPABLE                   "BFD_NEXT_HOP_CAPABLE"
@@ -114,6 +115,7 @@ private:
     void querySwitchPortEgressSampleCapability();
     void querySwitchPortMirrorCapability();
     void querySwitchSamplePacketCapability();
+    void querySwitchNhgProtectionCapability();
 
     // Statistics
     void generateSwitchCounterNameMap() const;

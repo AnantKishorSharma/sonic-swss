@@ -233,6 +233,7 @@ SwitchOrch::SwitchOrch(DBConnector *db, vector<TableConnector>& connectors, Tabl
     querySwitchPortEgressSampleCapability();
     querySwitchPortMirrorCapability();
     querySwitchSamplePacketCapability();
+    querySwitchNhgProtectionCapability();
     querySwitchHashDefaults();
     setSwitchIcmpOffloadCapability();
     setFastLinkupCapability();
@@ -2132,6 +2133,47 @@ void SwitchOrch::querySwitchSamplePacketCapability()
     }
 
     set_switch_capability(fvVector);
+}
+
+void SwitchOrch::querySwitchNhgProtectionCapability()
+{
+    SWSS_LOG_ENTER();
+
+    vector<FieldValueTuple> fvVector;
+    bool protection_capable = false;
+
+    const auto* meta = sai_metadata_get_attr_metadata(SAI_OBJECT_TYPE_NEXT_HOP_GROUP, SAI_NEXT_HOP_GROUP_ATTR_TYPE);
+    if (meta && meta->isenum)
+    {
+        vector<int32_t> values_list(meta->enummetadata->valuescount);
+        sai_s32_list_t values;
+        values.count = static_cast<uint32_t>(values_list.size());
+        values.list = values_list.data();
+
+        sai_status_t status = sai_query_attribute_enum_values_capability(gSwitchId,
+                                                                         SAI_OBJECT_TYPE_NEXT_HOP_GROUP,
+                                                                         SAI_NEXT_HOP_GROUP_ATTR_TYPE,
+                                                                         &values);
+        if (status == SAI_STATUS_SUCCESS)
+        {
+            for (size_t i = 0; i < values.count; i++)
+            {
+                if (values.list[i] == SAI_NEXT_HOP_GROUP_TYPE_PROTECTION)
+                {
+                    protection_capable = true;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            SWSS_LOG_NOTICE("Failed to query NEXT_HOP_GROUP type enum values capability, rv:%d", status);
+        }
+    }
+
+    fvVector.emplace_back(SWITCH_CAPABILITY_TABLE_NHG_PROTECTION_CAPABLE, protection_capable ? "true" : "false");
+    set_switch_capability(fvVector);
+    SWSS_LOG_NOTICE("Nexthop group protection (HW FRR) capable: %s", protection_capable ? "true" : "false");
 }
 
 void SwitchOrch::querySwitchTpidCapability()
