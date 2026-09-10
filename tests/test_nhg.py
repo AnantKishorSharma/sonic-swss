@@ -2665,6 +2665,56 @@ class TestCbfNextHopGroup(TestNextHopGroupBase):
         self.nhg_ps._del('group2')
         self.nhg_ps._del('cbfnhgmap1')
 
+class TestNextHopGroupProtection(TestNextHopGroupBase):
+    def test_nhgorch_protection_nhg(self, dvs, testlog):
+        self.init_test(dvs, 2)
+
+        # SwitchOrch advertises the protection capability at init.
+        assert "NHG_PROTECTION_CAPABLE" in self.state_db.get_entry("SWITCH_CAPABILITY", "switch")
+
+        # Create a protection next hop group: primary via Ethernet0, standby via
+        # Ethernet4, monitoring the primary egress port for HW failover.
+        fvs = swsscommon.FieldValuePairs([
+            ('nexthop', '{},{}'.format(self.peer_ip(0), self.peer_ip(1))),
+            ('ifname', '{},{}'.format(self.port_name(0), self.port_name(1))),
+            ('type', 'protection'),
+            ('primary', self.peer_ip(0)),
+            ('monitor', self.port_name(0)),
+        ])
+        self.nhg_ps.set('protnhg', fvs)
+
+        # The group is created in ASIC DB as a protection group.
+        self.asic_db.wait_for_n_keys(self.ASIC_NHG_STR, self.asic_nhgs_count + 1)
+        nhgid = self.get_nhg_id('protnhg')
+        assert nhgid is not None
+        assert self.asic_db.get_entry(self.ASIC_NHG_STR, nhgid)['SAI_NEXT_HOP_GROUP_ATTR_TYPE'] == \
+            'SAI_NEXT_HOP_GROUP_TYPE_PROTECTION'
+
+        # Two members with primary/standby roles; the primary carries the monitored object.
+        self.asic_db.wait_for_n_keys(self.ASIC_NHGM_STR, self.asic_nhgms_count + 2)
+        nhgm_ids = self.get_nhgm_ids('protnhg')
+        assert len(nhgm_ids) == 2
+
+        roles = set()
+        primary_has_monitor = False
+        for k in nhgm_ids:
+            member_fvs = self.asic_db.get_entry(self.ASIC_NHGM_STR, k)
+            role = member_fvs.get('SAI_NEXT_HOP_GROUP_MEMBER_ATTR_CONFIGURED_ROLE')
+            assert role is not None
+            roles.add(role)
+            if role == 'SAI_NEXT_HOP_GROUP_MEMBER_CONFIGURED_ROLE_PRIMARY':
+                assert 'SAI_NEXT_HOP_GROUP_MEMBER_ATTR_MONITORED_OBJECT' in member_fvs
+                primary_has_monitor = True
+
+        assert roles == {'SAI_NEXT_HOP_GROUP_MEMBER_CONFIGURED_ROLE_PRIMARY',
+                         'SAI_NEXT_HOP_GROUP_MEMBER_CONFIGURED_ROLE_STANDBY'}
+        assert primary_has_monitor
+
+        # Cleanup.
+        self.nhg_ps._del('protnhg')
+        self.asic_db.wait_for_n_keys(self.ASIC_NHG_STR, self.asic_nhgs_count)
+        self.asic_db.wait_for_n_keys(self.ASIC_NHGM_STR, self.asic_nhgms_count)
+
 # Add Dummy always-pass test at end as workaroud
 # for issue when Flaky fail on final test it invokes module tear-down before retrying
 def test_nonflaky_dummy():
