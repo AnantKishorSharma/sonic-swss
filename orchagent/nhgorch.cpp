@@ -67,6 +67,9 @@ void NhgOrch::doTask(Consumer& consumer)
             string srv6_source;
             bool overlay_nh = false;
             bool srv6_nh = false;
+            bool is_protection = false;
+            string primary_ip;
+            string monitor_port;
 
             /* Get group's next hop IPs and aliases */
             for (auto i : kfvFieldsValues(t))
@@ -94,6 +97,15 @@ void NhgOrch::doTask(Consumer& consumer)
                     nhgs = fvValue(i);
                     is_recursive = true;
                 }
+
+                if (fvField(i) == "type" && fvValue(i) == "protection")
+                    is_protection = true;
+
+                if (fvField(i) == "primary" && fvValue(i) != "")
+                    primary_ip = fvValue(i);
+
+                if (fvField(i) == "monitor" && fvValue(i) != "")
+                    monitor_port = fvValue(i);
             }
             /* A NHG should not have both regular(ip/alias) and recursive fields */
             if (is_recursive && (!ips.empty() || !aliases.empty()))
@@ -291,6 +303,26 @@ void NhgOrch::doTask(Consumer& consumer)
                     * nexthop group object even if it has just one available path
                     */
                     nhg->setRecursive(is_recursive);
+
+                    /* Configure a protection (HW FRR) group and resolve its monitored object. */
+                    if (is_protection)
+                    {
+                        sai_object_id_t monitored_oid = SAI_NULL_OBJECT_ID;
+                        if (!monitor_port.empty())
+                        {
+                            Port mon_port;
+                            if (gPortsOrch->getPort(monitor_port, mon_port))
+                            {
+                                monitored_oid = mon_port.m_port_id;
+                            }
+                            else
+                            {
+                                SWSS_LOG_WARN("Protection NHG %s monitor port %s not found",
+                                    index.c_str(), monitor_port.c_str());
+                            }
+                        }
+                        nhg->setProtection(true, primary_ip, monitored_oid);
+                    }
 
                     success = nhg->sync();
                     if (success)
@@ -712,6 +744,9 @@ NextHopGroup& NextHopGroup::operator=(NextHopGroup&& nhg)
 
     m_is_temp = nhg.m_is_temp;
     m_is_recursive = nhg.m_is_recursive;
+    m_is_protection = nhg.m_is_protection;
+    m_primary_ip = nhg.m_primary_ip;
+    m_monitored_oid = nhg.m_monitored_oid;
 
     NhgCommon::operator=(std::move(nhg));
 
@@ -739,7 +774,7 @@ bool NextHopGroup::sync()
     }
 
     /* If the group is non-recursive with single member, the group ID will be the only member's NH ID */
-    if (!isRecursive() && (m_members.size() == 1))
+    if (!isRecursive() && !isProtection() && (m_members.size() == 1))
     {
         const NextHopGroupMember& nhgm = m_members.begin()->second;
         sai_object_id_t nhid = nhgm.getNhId();
@@ -770,7 +805,8 @@ bool NextHopGroup::sync()
         vector<sai_attribute_t> nhg_attrs;
 
         nhg_attr.id = SAI_NEXT_HOP_GROUP_ATTR_TYPE;
-        nhg_attr.value.s32 = SAI_NEXT_HOP_GROUP_TYPE_ECMP;
+        nhg_attr.value.s32 = isProtection() ? SAI_NEXT_HOP_GROUP_TYPE_PROTECTION
+                                            : SAI_NEXT_HOP_GROUP_TYPE_ECMP;
         nhg_attrs.push_back(nhg_attr);
 
         sai_status_t status = sai_next_hop_group_api->create_next_hop_group(
@@ -1119,6 +1155,25 @@ vector<sai_attribute_t> NextHopGroup::createNhgmAttrs(const NextHopGroupMember& 
         nhgm_attr.id = SAI_NEXT_HOP_GROUP_MEMBER_ATTR_WEIGHT;
         nhgm_attr.value.s32 = weight;
         nhgm_attrs.push_back(nhgm_attr);
+    }
+
+    /* For a protection (HW FRR) group, assign the member's role and monitored object. */
+    if (m_is_protection)
+    {
+        bool is_primary = (nhgm.getKey().ip_address.to_string() == m_primary_ip);
+
+        nhgm_attr.id = SAI_NEXT_HOP_GROUP_MEMBER_ATTR_CONFIGURED_ROLE;
+        nhgm_attr.value.s32 = is_primary ? SAI_NEXT_HOP_GROUP_MEMBER_CONFIGURED_ROLE_PRIMARY
+                                         : SAI_NEXT_HOP_GROUP_MEMBER_CONFIGURED_ROLE_STANDBY;
+        nhgm_attrs.push_back(nhgm_attr);
+
+        /* The primary member monitors the object whose failure triggers switchover. */
+        if (is_primary && (m_monitored_oid != SAI_NULL_OBJECT_ID))
+        {
+            nhgm_attr.id = SAI_NEXT_HOP_GROUP_MEMBER_ATTR_MONITORED_OBJECT;
+            nhgm_attr.value.oid = m_monitored_oid;
+            nhgm_attrs.push_back(nhgm_attr);
+        }
     }
 
     return nhgm_attrs;

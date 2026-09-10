@@ -54,7 +54,8 @@ public:
     explicit NextHopGroup(const NextHopGroupKey& key, bool is_temp);
 
     NextHopGroup(NextHopGroup&& nhg) :
-        NhgCommon(move(nhg)), m_is_temp(nhg.m_is_temp), m_is_recursive(nhg.m_is_recursive)
+        NhgCommon(move(nhg)), m_is_temp(nhg.m_is_temp), m_is_recursive(nhg.m_is_recursive),
+        m_is_protection(nhg.m_is_protection), m_primary_ip(nhg.m_primary_ip), m_monitored_oid(nhg.m_monitored_oid)
     { SWSS_LOG_ENTER(); }
 
     NextHopGroup& operator=(NextHopGroup&& nhg);
@@ -87,6 +88,16 @@ public:
 
     inline void setRecursive(bool is_recursive) { m_is_recursive = is_recursive; }
 
+    /* Protection (HW FRR) group: primary/standby members with a monitored object. */
+    inline bool isProtection() const { return m_is_protection; }
+
+    inline void setProtection(bool is_protection, const std::string &primary_ip, sai_object_id_t monitored_oid)
+    {
+        m_is_protection = is_protection;
+        m_primary_ip = primary_ip;
+        m_monitored_oid = monitored_oid;
+    }
+
     NextHopGroupKey getNhgKey() const override { return m_key; }
 
     /* Convert NHG's details to a string. */
@@ -101,6 +112,11 @@ private:
 
     /* Whether the group is recursive i.e. having other nexthop group(s) as members */
     bool m_is_recursive;
+
+    /* Protection (HW FRR) group state. */
+    bool m_is_protection = false;
+    std::string m_primary_ip;
+    sai_object_id_t m_monitored_oid = SAI_NULL_OBJECT_ID;
 
     /* Add group's members over the SAI API for the given keys. */
     bool syncMembers(const set<NextHopKey>& nh_keys) override;
