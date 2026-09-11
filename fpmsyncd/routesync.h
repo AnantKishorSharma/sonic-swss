@@ -180,6 +180,9 @@ class NextHopGroupTableFieldValueTupleWrapper : public FieldValueTupleWrapperBas
     string nexthop = string();
     string ifname = string();
     string weight = string();
+    string type = string();
+    string primary = string();
+    string monitor = string();
 };
 
 class Srv6MySidTableFieldValueTupleWrapper : public FieldValueTupleWrapperBase {
@@ -399,6 +402,7 @@ private:
     /* Handle Nexthop message */
     void onNextHopMsg(struct nlmsghdr *h, int len);
     void onPicContextMsg(struct nlmsghdr *h, int len);
+    void onProtectionNhgMsg(struct nlmsghdr *h, int len);
     int parse_encap_seg6(const struct rtattr *tb, struct in6_addr *segs, struct in6_addr *src);
     /* Get next hop group key */
     const string getNextHopGroupKeyAsString(uint32_t id) const;

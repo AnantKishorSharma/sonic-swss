@@ -1226,6 +1226,9 @@ NextHopGroupTableFieldValueTupleWrapper::fieldValueTupleVector() {
         fvVector.push_back(FieldValueTuple("nexthop", nexthop.c_str()));
         fvVector.push_back(FieldValueTuple("ifname", ifname.c_str()));
         fvVector.push_back(FieldValueTuple("weight", weight.c_str()));
+        fvVector.push_back(FieldValueTuple("type", type.c_str()));
+        fvVector.push_back(FieldValueTuple("primary", primary.c_str()));
+        fvVector.push_back(FieldValueTuple("monitor", monitor.c_str()));
     } else {
         if (nexthop != string()) {
             fvVector.push_back(FieldValueTuple("nexthop", nexthop.c_str()));
@@ -1235,6 +1238,15 @@ NextHopGroupTableFieldValueTupleWrapper::fieldValueTupleVector() {
         }
         if (weight != string()) {
             fvVector.push_back(FieldValueTuple("weight", weight.c_str()));
+        }
+        if (type != string()) {
+            fvVector.push_back(FieldValueTuple("type", type.c_str()));
+        }
+        if (primary != string()) {
+            fvVector.push_back(FieldValueTuple("primary", primary.c_str()));
+        }
+        if (monitor != string()) {
+            fvVector.push_back(FieldValueTuple("monitor", monitor.c_str()));
         }
     }
     return fvVector;
@@ -2401,6 +2413,82 @@ void RouteSync::onEvpnEsBackupNhgMsg(struct nlmsghdr *h, int len)
     }
 }
 
+/*
+ * Handle a next-hop protection (HW FRR) group message from FRR.
+ * Upgrades an already-learnt nexthop group (the primary path) into a
+ * protection group by appending the standby (backup) group's members and
+ * tagging it with type=protection, the primary next-hop IP, and the monitored
+ * object whose liveness drives hardware failover.
+ */
+void RouteSync::onProtectionNhgMsg(struct nlmsghdr *h, int len)
+{
+    struct protection_nhg_msg *pnm = (struct protection_nhg_msg *)NLMSG_DATA(h);
+    uint32_t nhg_id = (uint32_t)pnm->pnm_nhg_id;
+    uint32_t backup_id = (uint32_t)pnm->pnm_backup_nhg_id;
+
+    auto pit = m_nh_groups.find(nhg_id);
+    if (pit == m_nh_groups.end())
+    {
+        SWSS_LOG_ERROR("Protection NHG %u: primary group not found", nhg_id);
+        return;
+    }
+
+    if (h->nlmsg_type == RTM_FPM_DEL_PROTECTION_NHG)
+    {
+        /* Protection removed: revert to a plain nexthop group. */
+        updateNextHopGroupDb(pit->second);
+        SWSS_LOG_INFO("Protection NHG %u removed, reverted to plain group", nhg_id);
+        return;
+    }
+
+    auto bit = m_nh_groups.find(backup_id);
+    if (bit == m_nh_groups.end())
+    {
+        SWSS_LOG_ERROR("Protection NHG %u: backup group %u not found", nhg_id, backup_id);
+        return;
+    }
+
+    /* Primary members first, then the standby (backup) members. */
+    string primary_nh, primary_if, primary_wt;
+    string backup_nh, backup_if, backup_wt;
+    getNextHopGroupFields(pit->second, primary_nh, primary_if, primary_wt);
+    getNextHopGroupFields(bit->second, backup_nh, backup_if, backup_wt);
+
+    if (primary_nh.empty() || backup_nh.empty())
+    {
+        SWSS_LOG_ERROR("Protection NHG %u: unresolved primary/backup members", nhg_id);
+        return;
+    }
+
+    /* The primary next-hop IP is the first member of the primary group. */
+    string primary_ip = primary_nh.substr(0, primary_nh.find(NHG_DELIMITER));
+
+    /* Resolve the monitored object (interface whose liveness drives failover). */
+    string monitor;
+    char if_name[IFNAMSIZ] = {0};
+    if (getIfName(pnm->pnm_monitor_ifindex, if_name, IFNAMSIZ))
+    {
+        monitor = string(if_name);
+    }
+
+    pit->second.installed = true;
+
+    string key = getNextHopGroupKeyAsString(nhg_id);
+    SWSS_LOG_INFO("Protection NHG set: key[%s] primary[%s] monitor[%s] nexthop[%s] ifname[%s]",
+                  key.c_str(), primary_ip.c_str(), monitor.c_str(),
+                  (primary_nh + NHG_DELIMITER + backup_nh).c_str(),
+                  (primary_if + NHG_DELIMITER + backup_if).c_str());
+
+    NextHopGroupTableFieldValueTupleWrapper fvw{std::move(key), isNbZmqEnabled()};
+    fvw.nexthop = primary_nh + NHG_DELIMITER + backup_nh;
+    fvw.ifname = primary_if + NHG_DELIMITER + backup_if;
+    fvw.weight = primary_wt + NHG_DELIMITER + backup_wt;
+    fvw.type = "protection";
+    fvw.primary = std::move(primary_ip);
+    fvw.monitor = std::move(monitor);
+    setTable(fvw, m_nexthop_groupTable);
+}
+
 void RouteSync::onMsgRaw(struct nlmsghdr *h)
 {
     int len, hdr_len = 0;
@@ -2446,6 +2534,10 @@ void RouteSync::onMsgRaw(struct nlmsghdr *h)
     case RTM_FPM_ADD_EVPN_ES_BACKUP_NHG:
     case RTM_FPM_DEL_EVPN_ES_BACKUP_NHG:
         hdr_len = sizeof(struct evpn_backup_nhg_msg);
+        break;
+    case RTM_FPM_ADD_PROTECTION_NHG:
+    case RTM_FPM_DEL_PROTECTION_NHG:
+        hdr_len = sizeof(struct protection_nhg_msg);
         break;
     default:
         hdr_len = sizeof(struct ndmsg);
@@ -2494,6 +2586,10 @@ void RouteSync::onMsgRaw(struct nlmsghdr *h)
     case RTM_FPM_ADD_EVPN_ES_BACKUP_NHG:
     case RTM_FPM_DEL_EVPN_ES_BACKUP_NHG:
         onEvpnEsBackupNhgMsg(h, len);
+        return;
+    case RTM_FPM_ADD_PROTECTION_NHG:
+    case RTM_FPM_DEL_PROTECTION_NHG:
+        onProtectionNhgMsg(h, len);
         return;
     default:
         break;

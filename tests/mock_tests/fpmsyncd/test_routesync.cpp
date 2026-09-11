@@ -2743,6 +2743,96 @@ TEST_F(FpmSyncdResponseTest, TestPicContext_NHG)
     free(group_nlh);
 }
 
+struct nlmsghdr* createProtectionNhgMsgHdr(uint16_t msg_type, uint32_t nhg_id,
+                                           uint32_t backup_id, int32_t monitor_ifindex) {
+    struct nlmsghdr *nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(MAX_PAYLOAD));
+    memset(nlh, 0, NLMSG_SPACE(MAX_PAYLOAD));
+    nlh->nlmsg_type = msg_type;
+    nlh->nlmsg_flags = NLM_F_REQUEST;
+    nlh->nlmsg_len = NLMSG_LENGTH(sizeof(struct protection_nhg_msg));
+    struct protection_nhg_msg *pnm = (struct protection_nhg_msg *)NLMSG_DATA(nlh);
+    pnm->pnm_nhg_id = (int)nhg_id;
+    pnm->pnm_backup_nhg_id = (int)backup_id;
+    pnm->pnm_monitor_ifindex = monitor_ifindex;
+    return nlh;
+}
+
+TEST_F(FpmSyncdResponseTest, TestProtectionNhg)
+{
+    uint32_t primary_nh_id = 201, backup_nh_id = 202;
+    uint32_t primary_grp_id = 210, backup_grp_id = 211;
+    const char *primary_gw = "10.0.0.2";
+    const char *backup_gw = "10.0.1.2";
+    int32_t primary_ifindex = 1, backup_ifindex = 2, monitor_ifindex = 1;
+
+    /* Leaf next-hops that the primary/backup groups reference. */
+    struct nlmsghdr* nlh_p = createNewNextHopMsgHdr(primary_ifindex, primary_gw, primary_nh_id);
+    struct nlmsghdr* nlh_b = createNewNextHopMsgHdr(backup_ifindex, backup_gw, backup_nh_id);
+
+    EXPECT_CALL(m_mockRouteSync, getIfName(primary_ifindex, _, _))
+        .WillRepeatedly(DoAll(
+            [](int32_t, char *ifname, size_t size) { strncpy(ifname, "Ethernet0", size); ifname[size-1] = '\0'; },
+            Return(true)));
+    EXPECT_CALL(m_mockRouteSync, getIfName(backup_ifindex, _, _))
+        .WillRepeatedly(DoAll(
+            [](int32_t, char *ifname, size_t size) { strncpy(ifname, "Ethernet4", size); ifname[size-1] = '\0'; },
+            Return(true)));
+
+    m_mockRouteSync.onNextHopMsg(nlh_p, (int)(nlh_p->nlmsg_len - NLMSG_LENGTH(sizeof(struct nhmsg))));
+    m_mockRouteSync.onNextHopMsg(nlh_b, (int)(nlh_b->nlmsg_len - NLMSG_LENGTH(sizeof(struct nhmsg))));
+
+    /* Primary group {201} and backup group {202}. */
+    struct nlmsghdr* grp_p = createNewNextHopMsgHdr(vector<pair<uint32_t, uint8_t>>{{primary_nh_id, 1}}, primary_grp_id);
+    struct nlmsghdr* grp_b = createNewNextHopMsgHdr(vector<pair<uint32_t, uint8_t>>{{backup_nh_id, 1}}, backup_grp_id);
+    m_mockRouteSync.onNextHopMsg(grp_p, (int)(grp_p->nlmsg_len - NLMSG_LENGTH(sizeof(struct nhmsg))));
+    m_mockRouteSync.onNextHopMsg(grp_b, (int)(grp_b->nlmsg_len - NLMSG_LENGTH(sizeof(struct nhmsg))));
+
+    /* Upgrade the primary group to a protection group with the backup as standby. */
+    struct nlmsghdr* pnlh = createProtectionNhgMsgHdr(RTM_FPM_ADD_PROTECTION_NHG,
+                                                      primary_grp_id, backup_grp_id, monitor_ifindex);
+    m_mockRouteSync.onProtectionNhgMsg(pnlh, (int)(pnlh->nlmsg_len - NLMSG_LENGTH(sizeof(struct protection_nhg_msg))));
+
+    /* The protection group must be published to APPL_DB NEXTHOP_GROUP_TABLE. */
+    Table nexthop_group_table(m_db.get(), APP_NEXTHOP_GROUP_TABLE_NAME);
+    vector<FieldValueTuple> fieldValues;
+    string key = to_string(primary_grp_id);
+    ASSERT_TRUE(nexthop_group_table.get(key, fieldValues)) << "protection NHG missing in APPL_DB";
+
+    string type, primary, monitor, nexthop, ifname;
+    for (const auto& fv : fieldValues) {
+        if (fvField(fv) == "type") type = fvValue(fv);
+        else if (fvField(fv) == "primary") primary = fvValue(fv);
+        else if (fvField(fv) == "monitor") monitor = fvValue(fv);
+        else if (fvField(fv) == "nexthop") nexthop = fvValue(fv);
+        else if (fvField(fv) == "ifname") ifname = fvValue(fv);
+    }
+    EXPECT_EQ(type, "protection");
+    EXPECT_EQ(primary, "10.0.0.2");
+    EXPECT_EQ(monitor, "Ethernet0");
+    EXPECT_EQ(nexthop, "10.0.0.2,10.0.1.2");
+    EXPECT_EQ(ifname, "Ethernet0,Ethernet4");
+
+    /* Deleting the protection reverts the group to a plain nexthop group. */
+    struct nlmsghdr* pnlh_del = createProtectionNhgMsgHdr(RTM_FPM_DEL_PROTECTION_NHG,
+                                                          primary_grp_id, backup_grp_id, monitor_ifindex);
+    m_mockRouteSync.onProtectionNhgMsg(pnlh_del, (int)(pnlh_del->nlmsg_len - NLMSG_LENGTH(sizeof(struct protection_nhg_msg))));
+
+    fieldValues.clear();
+    ASSERT_TRUE(nexthop_group_table.get(key, fieldValues)) << "plain NHG missing after protection delete";
+    string type_after = "";
+    for (const auto& fv : fieldValues) {
+        if (fvField(fv) == "type") type_after = fvValue(fv);
+    }
+    EXPECT_NE(type_after, "protection") << "group should no longer be a protection group";
+
+    free(nlh_p);
+    free(nlh_b);
+    free(grp_p);
+    free(grp_b);
+    free(pnlh);
+    free(pnlh_del);
+}
+
 // ============================================================================
 
 // Additional RouteSync coverage tests
@@ -5139,7 +5229,7 @@ TEST_F(FpmSyncdResponseTest, TestZmqWrappersEmitCompleteFieldSet)
 
     NextHopGroupTableFieldValueTupleWrapper nhg{"ID1", /*nbZmqEnabled=*/true};
     EXPECT_EQ(fieldNames(nhg.fieldValueTupleVector()),
-              (vector<string>{"nexthop", "ifname", "weight"}));
+              (vector<string>{"nexthop", "ifname", "weight", "type", "primary", "monitor"}));
 
     Srv6MySidTableFieldValueTupleWrapper mysid{"fc00:0:1::/48", /*nbZmqEnabled=*/true};
     EXPECT_EQ(fieldNames(mysid.fieldValueTupleVector()),

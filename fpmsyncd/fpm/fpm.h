@@ -169,7 +169,11 @@ typedef enum {
   RTM_FPM_ADD_EVPN_ES_BACKUP_NHG,
   /* Notify FPM about a delete of a backup NHG */
   RTM_FPM_DEL_EVPN_ES_BACKUP_NHG,
-  RTM_FPM_LAST = RTM_FPM_DEL_EVPN_ES_BACKUP_NHG,
+  /* Notify FPM about a next-hop protection (HW FRR) group */
+  RTM_FPM_ADD_PROTECTION_NHG,
+  /* Notify FPM about a delete of a next-hop protection group */
+  RTM_FPM_DEL_PROTECTION_NHG,
+  RTM_FPM_LAST = RTM_FPM_DEL_PROTECTION_NHG,
   RTM_FPM_MAX = RTM_FPM_LAST
 } rtm_fpm_msg_types_et;
 
@@ -189,6 +193,17 @@ struct evpn_df_msg {
 struct evpn_backup_nhg_msg {
   int ebnm_ifindex;
   int ebnm_backup_nhg_id;
+};
+
+/*
+ * Next-hop protection (HW FRR) group. Upgrades an existing nexthop group
+ * (pnm_nhg_id) to a protection group whose standby path is pnm_backup_nhg_id,
+ * with hardware failover driven by the liveness of pnm_monitor_ifindex.
+ */
+struct protection_nhg_msg {
+  int pnm_nhg_id;
+  int pnm_backup_nhg_id;
+  int pnm_monitor_ifindex;
 };
 
 /* Attribute IDs for SHL Updates */
